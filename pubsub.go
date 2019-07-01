@@ -38,7 +38,7 @@ type PubSub struct {
 	cmd *Cmd
 
 	chOnce sync.Once
-	ch     chan *Message
+	ch     chan interface{}
 	ping   chan struct{}
 }
 
@@ -394,22 +394,22 @@ func (c *PubSub) ReceiveMessage() (*Message, error) {
 }
 
 // Channel returns a Go channel for concurrently receiving messages.
-// It periodically sends Ping messages to test connection health.
-// The channel is closed with PubSub. Receive* APIs can not be used
-// after channel is created.
+// The channel is closed together with the PubSub. If the Go channel
+// is blocked full for 30 seconds the message is dropped.
+// Receive* APIs can not be used after channel is created.
 //
-// If the Go channel is full for 30 seconds the message is dropped.
-func (c *PubSub) Channel() <-chan *Message {
-	return c.channel(100)
+// Message type can be either *Subscription or *Message. Subscription
+// messages can be used to detect reconnections.
+//
+// go-redis periodically sends ping messages to test connection health
+// and re-subscribes if ping can not not received for 30 seconds.
+func (c *PubSub) Channel() <-chan interface{} {
+	return c.ChannelSize(100)
 }
 
 // ChannelSize is like Channel, but creates a Go channel
 // with specified buffer size.
-func (c *PubSub) ChannelSize(size int) <-chan *Message {
-	return c.channel(size)
-}
-
-func (c *PubSub) channel(size int) <-chan *Message {
+func (c *PubSub) ChannelSize(size int) <-chan interface{} {
 	c.chOnce.Do(func() {
 		c.initChannel(size)
 	})
@@ -423,7 +423,7 @@ func (c *PubSub) channel(size int) <-chan *Message {
 func (c *PubSub) initChannel(size int) {
 	const timeout = 30 * time.Second
 
-	c.ch = make(chan *Message, size)
+	c.ch = make(chan interface{}, size)
 	c.ping = make(chan struct{}, 1)
 
 	go func() {
@@ -455,21 +455,11 @@ func (c *PubSub) initChannel(size int) {
 
 			switch msg := msg.(type) {
 			case *Subscription:
-				// Ignore.
+				c.sendMessage(msg, timer, timeout)
 			case *Pong:
 				// Ignore.
 			case *Message:
-				timer.Reset(timeout)
-				select {
-				case c.ch <- msg:
-					if !timer.Stop() {
-						<-timer.C
-					}
-				case <-timer.C:
-					internal.Logger.Printf(
-						"redis: %s channel is full for %s (message is dropped)",
-						c, timeout)
-				}
+				c.sendMessage(msg, timer, timeout)
 			default:
 				internal.Logger.Printf("redis: unknown message type: %T", msg)
 			}
@@ -506,6 +496,19 @@ func (c *PubSub) initChannel(size int) {
 			}
 		}
 	}()
+}
+
+func (c *PubSub) sendMessage(msg interface{}, timer *time.Timer, timeout time.Duration) {
+	timer.Reset(timeout)
+	select {
+	case c.ch <- msg:
+		if !timer.Stop() {
+			<-timer.C
+		}
+	case <-timer.C:
+		internal.Logger.Printf(
+			"redis: %s channel is full for %s (message is dropped)", c, timeout)
+	}
 }
 
 func (c *PubSub) retryBackoff(attempt int) time.Duration {

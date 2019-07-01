@@ -354,7 +354,12 @@ func ExamplePubSub() {
 
 	// Consume messages.
 	for msg := range ch {
-		fmt.Println(msg.Channel, msg.Payload)
+		switch msg := msg.(type) {
+		case *redis.Subscription:
+			// Subscription is renewed.
+		case *redis.Message:
+			fmt.Println(msg.Channel, msg.Payload)
+		}
 	}
 
 	// Output: mychannel1 hello

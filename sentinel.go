@@ -480,14 +480,18 @@ func (c *sentinelFailover) listen(pubsub *PubSub) {
 			break
 		}
 
-		if msg.Channel == "+switch-master" {
-			parts := strings.Split(msg.Payload, " ")
-			if parts[0] != c.masterName {
-				internal.Logger.Printf("sentinel: ignore addr for master=%q", parts[0])
-				continue
+		switch msg := msg.(type) {
+		case *Subscription:
+		case *Message:
+			if msg.Channel == "+switch-master" {
+				parts := strings.Split(msg.Payload, " ")
+				if parts[0] != c.masterName {
+					internal.Logger.Printf("sentinel: ignore addr for master=%q", parts[0])
+					continue
+				}
+				addr := net.JoinHostPort(parts[3], parts[4])
+				c.switchMaster(addr)
 			}
-			addr := net.JoinHostPort(parts[3], parts[4])
-			c.switchMaster(addr)
 		}
 	}
 }
